@@ -242,7 +242,11 @@
     });
   }
 
-  /** Popover under the avatar with the user's name, email and role (loaded from api/me.php on first open). */
+  /**
+   * Popover under the avatar with the user's name, email and role, loaded on first open from
+   * the panel's dashboard endpoint (api/vehicleowner/dashboard.php or api/mechanic/dashboard.php,
+   * field `me`). The panel is the page's folder under pages/.
+   */
   function initAvatarPopover(avatar) {
     const name = el('p', { style: 'margin:0;font-size:14px;font-weight:700;color:#0f172a;', text: avatar.getAttribute('title') || '' });
     const email = el('p', { style: 'margin:4px 0 0;font-size:13px;color:#475569;word-break:break-all;', text: 'Loading…' });
@@ -265,7 +269,9 @@
       if (loaded) return;
       loaded = true;
       try {
-        const me = await createApi('../../api/').get('me.php');
+        const panel = window.location.pathname.split('/').slice(-2, -1)[0];
+        if (panel !== 'vehicleowner' && panel !== 'mechanic') throw new Error('Unknown panel');
+        const me = (await createApi('../../api/' + panel + '/').get('dashboard.php')).me;
         name.textContent = me.name;
         email.textContent = me.email || '—';
         role.textContent = me.role === 'VehicleOwner' ? 'Vehicle Owner' : me.role;

@@ -62,8 +62,9 @@ try {
     }
     json_ok(['id' => $newId], 201);
 } catch (PDOException $e) {
-    // Race on the UNIQUE plate/VIN index
-    if ($e->getCode() === '23000') {
+    // SQLSTATE 23000 covers both; only a duplicate key (1062, race on the UNIQUE plate/VIN
+    // index) means "already registered". A foreign key failure (1452) is a server error.
+    if ($e->getCode() === '23000' && (int) ($e->errorInfo[1] ?? 0) === 1062) {
         json_error('A vehicle with this license plate or VIN is already registered.', 409);
     }
     json_server_error($e);
