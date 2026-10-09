@@ -6,10 +6,10 @@ SET FOREIGN_KEY_CHECKS = 0;
 -- password_hash is a dummy hash for this seed data
 INSERT INTO Users (id, name, email, password_hash, phone, role, status) VALUES 
 (1, 'System Admin', 'admin@autocare.com', 'hashed_password_123', '555-0101', 'Admin', 'Active'),
-(2, 'John Manager', 'john.manager@autocare.com', 'hashed_password_123', '555-0102', 'Manager', 'Active'),
-(3, 'Mike Mechanic', 'mike.mech@autocare.com', 'hashed_password_123', '555-0103', 'Mechanic', 'Active'),
+(2, 'John Manager', 'manager@autocare.com', 'hashed_password_123', '555-0102', 'Manager', 'Active'),
+(3, 'Mike Mechanic', 'mechanic@autocare.com', 'hashed_password_123', '555-0103', 'Mechanic', 'Active'),
 (4, 'Sarah Mechanic', 'sarah.mech@autocare.com', 'hashed_password_123', '555-0104', 'Mechanic', 'Active'),
-(5, 'Alice Owner', 'alice.owner@example.com', 'hashed_password_123', '555-0201', 'VehicleOwner', 'Active'),
+(5, 'Alice Owner', 'owner@autocare.com', 'hashed_password_123', '555-0201', 'VehicleOwner', 'Active'),
 (6, 'Bob Owner', 'bob.owner@example.com', 'hashed_password_123', '555-0202', 'VehicleOwner', 'Active');
 
 -- 2. Workshops
