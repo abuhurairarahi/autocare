@@ -398,6 +398,40 @@ body {
     color: var(--vo-status-blue-text);
 }
 
+.vo-status--pending {
+    background: #fffbeb;
+    border-color: #fde68a;
+    color: #92400e;
+}
+
+.vo-status--approved {
+    background: var(--vo-status-blue-bg);
+    border-color: var(--vo-status-blue-border);
+    color: var(--vo-status-blue-text);
+}
+
+.vo-view-tabs {
+    display: inline-flex;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 9999px;
+    background: var(--vo-gray-bg);
+}
+
+.vo-view-tab {
+    padding: 6px 14px;
+    border-radius: 9999px;
+    color: var(--vo-text-body);
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.vo-view-tab--active {
+    background: var(--vo-navy);
+    color: #fff;
+}
+
 .vo-row-actions {
     display: flex;
     flex-direction: column;

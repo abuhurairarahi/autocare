@@ -153,6 +153,7 @@ body {
     padding: 0;
     gap: 0;
     overflow: hidden;
+    flex: 0 0 auto;
 }
 
 .vo-card__top {
