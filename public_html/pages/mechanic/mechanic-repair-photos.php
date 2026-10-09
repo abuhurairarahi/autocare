@@ -121,7 +121,7 @@ $canEdit = $job && $job['is_open'];
                     <?php if (!$job): ?>
                     <p><?= isset($_GET['job_id']) ? 'This job does not exist or is not assigned to you.' : 'You have no open jobs.' ?> <a href="mechanic-assigned-jobs.php">Back to Assigned Jobs</a></p>
                     <?php else: ?>
-                    <!-- Gallery grid. RepairPhotos has no before/after column, so all photos share one gallery. -->
+                    <!-- Gallery grid. All JobCardPhotos rows for the job share one gallery. -->
                     <div class="rp-grid">
 
                         <section class="rp-col">

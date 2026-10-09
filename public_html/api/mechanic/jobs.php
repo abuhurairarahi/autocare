@@ -4,7 +4,8 @@
  *      -> jobs assigned to the logged-in mechanic.
  * GET  ?id=ID -> one assigned job with timeline, parts, labor and photo count.
  * POST { action: 'update_status', job_id, status }
- *      -> move an assigned job to Diagnosis / Awaiting Parts / Repairing / Testing / Completed.
+ *      -> move an assigned job to Diagnosis / Awaiting Parts / Repairing / Testing / Completed
+ *         (stored as JobCards.status plus a RepairTimeline row; see repair-stages.php).
  * POST { action: 'notify_manager', job_id, topic: 'estimate'|'parts_labor' }
  *      -> send the job's manager a chat message.
  */
@@ -32,7 +33,7 @@ try {
         $filters = [];
         $status = $_GET['status'] ?? '';
         if ($status !== '') {
-            if (!in_array($status, ['open', 'done'], true) && !isset(MECHANIC_STATUS_FLOW[$status])) {
+            if (!in_array($status, ['open', 'done', 'Assigned', 'In Progress', 'Ready', 'Delivered'], true) && !isset(MECHANIC_STATUS_FLOW[$status])) {
                 json_error('Unknown status filter.', 422);
             }
             $filters['status'] = $status;
@@ -85,20 +86,15 @@ try {
         $pdo->beginTransaction();
         $stmt = $pdo->prepare("
             UPDATE JobCards
-               SET status = ?, kanban_stage = ?, progress_percentage = ?,
+               SET status = ?,
+                   start_date = COALESCE(start_date, NOW()),
                    completion_date = IF(? = 'Completed', NOW(), NULL)
-             WHERE job_id = ? AND mechanic_id = ?
+             WHERE id = ? AND mechanic_id = ?
         ");
-        $stmt->execute([$status, $flow['kanban'], $flow['progress'], $status, $jobId, $mechanicId]);
+        $stmt->execute([$flow['db'], $flow['db'], $jobId, $mechanicId]);
 
-        $pdo->prepare("INSERT INTO RepairTimeline (job_id, stage, updated_by) VALUES (?, ?, ?)")
+        $pdo->prepare("INSERT INTO RepairTimeline (job_card_id, stage, updated_by) VALUES (?, ?, ?)")
             ->execute([$jobId, $status, $mechanicId]);
-
-        // Manager pages print ActivityLogs text/subtext as HTML, so escape everything interpolated
-        $pdo->prepare("INSERT INTO ActivityLogs (text, type, subtext) VALUES (?, 'blue', ?)")->execute([
-            'Job Card <strong>' . e($job['code']) . '</strong> moved to ' . e($status) . ' by ' . e($user['name']) . '.',
-            e($job['vehicle'] ?? ''),
-        ]);
         $pdo->commit();
 
         json_ok([
@@ -130,8 +126,8 @@ try {
             json_error("topic must be 'estimate' or 'parts_labor'.", 422);
         }
 
-        $pdo->prepare("INSERT INTO ChatMessages (sender_id, receiver_id, job_tag, message_text) VALUES (?, ?, ?, ?)")
-            ->execute([$mechanicId, $job['manager_id'], $job['code'], $text]);
+        $pdo->prepare("INSERT INTO ChatMessages (sender_id, receiver_id, message_text) VALUES (?, ?, ?)")
+            ->execute([$mechanicId, $job['manager_id'], $text]);
 
         json_ok(['sent_to' => $job['manager_name'], 'message' => $text], 201);
     }

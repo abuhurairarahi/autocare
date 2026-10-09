@@ -8,7 +8,7 @@ $mechanicId = $user['id'];
 $openJobs = mechanic_jobs($pdo, $mechanicId, ['status' => 'open']);
 $requestedId = input_id($_GET['job_id'] ?? null) ?: ($openJobs[0]['id'] ?? null);
 $job = $requestedId ? mechanic_job($pdo, $mechanicId, $requestedId) : null;
-$reports = $job ? parse_fault_reports($job['fault_report']) : [];
+$reports = $job ? job_fault_reports($pdo, $job) : [];
 $canReport = $job && $job['is_open'];
 
 function severity_badge(?string $severity): array
@@ -222,7 +222,7 @@ function severity_badge(?string $severity): array
                                     <p class="fr-report-card__desc" style="white-space: pre-line;"><?= e($r['body']) ?></p>
                                     <?php if ($r['reported']): ?>
                                     <div class="fr-report-card__foot">
-                                        <span class="fr-report-card__meta"><i class="fa-regular fa-clock"></i> <?= e(date('M d, Y g:i A', strtotime($r['reported']['at']))) ?> by <?= e($r['reported']['by']) ?></span>
+                                        <span class="fr-report-card__meta"><i class="fa-regular fa-clock"></i> <?= e(date('M d, Y g:i A', strtotime($r['reported']['at']))) ?><?= $r['reported']['by'] ? ' by ' . e($r['reported']['by']) : '' ?></span>
                                     </div>
                                     <?php endif; ?>
                                 </article>

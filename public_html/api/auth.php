@@ -34,6 +34,9 @@ set_exception_handler(function (Throwable $e) {
 
 require_once __DIR__ . '/db.php';
 
+// One shared connection for every Mechanic/VehicleOwner page and endpoint
+$pdo = databaseConnection();
+
 /**
  * Current time from the database clock. PHP and MySQL may run in different time zones
  * (XAMPP: PHP Europe/Berlin, MySQL system time), so "today"/"ago" comparisons against
@@ -54,33 +57,62 @@ function now_ts(): int
     return strtotime(db_now());
 }
 
-// Landing page per role, relative to public_html/pages/
-const ROLE_HOME = [
-    'Admin' => 'admin/dashboard.html',
-    'Manager' => 'manager/manager-dashboard.html',
-    'Mechanic' => 'mechanic/mechanic-dashboard.php',
-    'VehicleOwner' => 'vehicleowner/vehicleowner-dashboard.php',
+// Team login (api/login-api.php) role names => Users.role values used by these panels
+const SESSION_ROLE_MAP = [
+    'Vehicle Owner' => 'VehicleOwner',
+    'Mechanic' => 'Mechanic',
 ];
 
+// Landing page per team login role, relative to public_html/pages/
+const ROLE_HOME = [
+    'Administrator' => 'admin/dashboard.html',
+    'Workshop Manager' => 'manager/manager-dashboard.html',
+    'Mechanic' => 'mechanic/mechanic-dashboard.php',
+    'Vehicle Owner' => 'vehicleowner/vehicleowner-dashboard.php',
+];
+
+/**
+ * The logged-in user from the team login session, or null when not logged in.
+ * 'id' is the Users.id (matched by email to AuthUsers) that every query here uses;
+ * it is null when the login account has no matching Users row of the same role.
+ * 'role' is the Users.role form ('VehicleOwner', 'Mechanic'), or the raw session role
+ * for other roles; 'session_role' is always the raw session value.
+ */
 function current_user(): ?array
 {
-    if (empty($_SESSION['user_id']) || empty($_SESSION['role'])) {
+    if (empty($_SESSION['user_id']) || empty($_SESSION['user_role'])) {
         return null;
     }
-    return [
-        'id' => (int) $_SESSION['user_id'],
-        'role' => $_SESSION['role'],
-        'name' => $_SESSION['name'] ?? '',
-    ];
-}
+    $authId = (int) $_SESSION['user_id'];
+    $sessionRole = (string) $_SESSION['user_role'];
+    $role = SESSION_ROLE_MAP[$sessionRole] ?? $sessionRole;
 
-function login_user(array $row): void
-{
-    session_regenerate_id(true);
-    $_SESSION['user_id'] = (int) $row['user_id'];
-    $_SESSION['role'] = $row['role'];
-    $_SESSION['name'] = $row['name'];
-    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    $cache = $_SESSION['om_link'] ?? null;
+    if (!is_array($cache) || $cache['auth_id'] !== $authId || $cache['role'] !== $role || $cache['id'] === null) {
+        $id = null;
+        $name = null;
+        if (isset(SESSION_ROLE_MAP[$sessionRole])) {
+            global $pdo;
+            $stmt = $pdo->prepare("
+                SELECT u.id, u.name FROM AuthUsers a JOIN Users u ON u.email = a.email
+                 WHERE a.id = ? AND u.role = ? LIMIT 1");
+            $stmt->execute([$authId, $role]);
+            if ($row = $stmt->fetch()) {
+                $id = (int) $row['id'];
+                $name = $row['name'];
+            }
+        }
+        $cache = ['auth_id' => $authId, 'role' => $role, 'id' => $id, 'name' => $name];
+        $_SESSION['om_link'] = $cache;
+    }
+
+    return [
+        'id' => $cache['id'],
+        'auth_id' => $authId,
+        'role' => $role,
+        'session_role' => $sessionRole,
+        'name' => (string) ($_SESSION['user_name'] ?? $cache['name'] ?? ''),
+    ];
 }
 
 function logout_user(): void
@@ -145,6 +177,9 @@ function require_api_role(string $role): array
     if ($user['role'] !== $role) {
         json_error('Forbidden', 403);
     }
+    if ($user['id'] === null) {
+        json_error('This login has no linked ' . $role . ' profile.', 403);
+    }
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     if ($method !== 'GET' && !csrf_valid($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
         json_error('Invalid or missing CSRF token', 403);
@@ -157,11 +192,18 @@ function require_page_role(string $role): array
 {
     $user = current_user();
     if (!$user) {
-        header('Location: ../login.php');
+        header('Location: ../login.html');
         exit;
     }
     if ($user['role'] !== $role) {
-        header('Location: ../' . (ROLE_HOME[$user['role']] ?? 'login.php'));
+        header('Location: ../' . (ROLE_HOME[$user['session_role']] ?? 'login.html'));
+        exit;
+    }
+    if ($user['id'] === null) {
+        // Logged in with the right role but no Users row shares this email
+        http_response_code(403);
+        echo '<p style="font-family: sans-serif; padding: 24px;">Your login is not linked to a ' . e($role)
+            . ' profile yet. Please contact the workshop. <a href="../logout.php">Log out</a></p>';
         exit;
     }
     return $user;

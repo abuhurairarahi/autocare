@@ -20,34 +20,34 @@ function chat_contacts(PDO $pdo, int $userId, string $role): array
     if ($role === 'VehicleOwner') {
         $related = "
             SELECT j.mechanic_id FROM JobCards j
-              JOIN Appointments a ON j.appointment_id = a.appointment_id
+              JOIN Appointments a ON j.appointment_id = a.id
              WHERE a.owner_id = :me1 AND j.mechanic_id IS NOT NULL";
         $relatedRole = 'Mechanic';
     } else {
         $related = "
             SELECT a.owner_id FROM JobCards j
-              JOIN Appointments a ON j.appointment_id = a.appointment_id
+              JOIN Appointments a ON j.appointment_id = a.id
              WHERE j.mechanic_id = :me1";
         $relatedRole = 'VehicleOwner';
     }
 
     $stmt = $pdo->prepare("
-        SELECT u.user_id AS id, u.name, u.role, u.specialty, u.avatar,
-               last.message_text AS last_message, last.created_at AS last_time,
+        SELECT u.id, u.name, u.role, NULL AS specialty, NULL AS avatar,
+               last.message_text AS last_message, last.sent_at AS last_time,
                (SELECT COUNT(*) FROM ChatMessages c
-                 WHERE c.sender_id = u.user_id AND c.receiver_id = :me2 AND c.is_read = 0) AS unread
+                 WHERE c.sender_id = u.id AND c.receiver_id = :me2 AND c.is_read = 0) AS unread
           FROM Users u
-          LEFT JOIN ChatMessages last ON last.message_id = (
-                SELECT m.message_id FROM ChatMessages m
-                 WHERE (m.sender_id = u.user_id AND m.receiver_id = :me3)
-                    OR (m.sender_id = :me4 AND m.receiver_id = u.user_id)
-                 ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1)
-         WHERE u.user_id <> :me5
+          LEFT JOIN ChatMessages last ON last.id = (
+                SELECT m.id FROM ChatMessages m
+                 WHERE (m.sender_id = u.id AND m.receiver_id = :me3)
+                    OR (m.sender_id = :me4 AND m.receiver_id = u.id)
+                 ORDER BY m.sent_at DESC, m.id DESC LIMIT 1)
+         WHERE u.id <> :me5
            AND u.role IN ('Manager', 'Mechanic', 'VehicleOwner')
            AND (u.role = 'Manager'
-                OR (u.role = :relatedRole AND u.user_id IN ({$related}))
-                OR last.message_id IS NOT NULL)
-         ORDER BY last.created_at IS NULL, last.created_at DESC, u.role, u.name
+                OR (u.role = :relatedRole AND u.id IN ({$related}))
+                OR last.id IS NOT NULL)
+         ORDER BY last.sent_at IS NULL, last.sent_at DESC, u.role, u.name
     ");
     $stmt->execute([
         'me1' => $userId, 'me2' => $userId, 'me3' => $userId, 'me4' => $userId, 'me5' => $userId,
@@ -79,12 +79,12 @@ function chat_messages(PDO $pdo, int $userId, int $contactId, int $afterId = 0, 
 {
     $stmt = $pdo->prepare("
         SELECT * FROM (
-            SELECT m.message_id AS id, m.sender_id, m.job_tag, m.message_text AS message,
-                   m.attachment_url, m.created_at
+            SELECT m.id, m.sender_id, NULL AS job_tag, m.message_text AS message,
+                   m.attachment_url, m.sent_at AS created_at
               FROM ChatMessages m
              WHERE ((m.sender_id = ? AND m.receiver_id = ?) OR (m.sender_id = ? AND m.receiver_id = ?))
-               AND m.message_id > ?
-             ORDER BY m.created_at DESC, m.message_id DESC
+               AND m.id > ?
+             ORDER BY m.sent_at DESC, m.id DESC
              LIMIT " . max(1, $limit) . "
         ) recent ORDER BY created_at ASC, id ASC
     ");

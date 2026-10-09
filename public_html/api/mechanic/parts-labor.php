@@ -56,7 +56,7 @@ try {
             json_error('Choose a part and a quantity between 1 and 100.', 422);
         }
 
-        $stmt = $pdo->prepare("SELECT name, price, stock_quantity FROM SpareParts WHERE part_id = ?");
+        $stmt = $pdo->prepare("SELECT name, price, stock_quantity FROM SpareParts WHERE id = ?");
         $stmt->execute([$partId]);
         $part = $stmt->fetch();
         if (!$part) {
@@ -67,32 +67,26 @@ try {
         }
 
         $unit = (float) $part['price'];
-        $pdo->prepare("INSERT INTO JobParts (job_id, part_id, quantity, unit_price, total_price, status) VALUES (?, ?, ?, ?, ?, 'Pending Approval')")
-            ->execute([$job['id'], $partId, $quantity, $unit, round($unit * $quantity, 2)]);
+        $pdo->prepare("INSERT INTO JobCardParts (job_card_id, part_id, quantity, unit_price, status) VALUES (?, ?, ?, ?, 'Pending Approval')")
+            ->execute([$job['id'], $partId, $quantity, $unit]);
         $newId = (int) $pdo->lastInsertId();
-
-        // Manager pages print ActivityLogs text/subtext as HTML, so escape everything interpolated
-        $pdo->prepare("INSERT INTO ActivityLogs (text, type, subtext) VALUES (?, 'red', ?)")->execute([
-            'Spare part requested: <strong>' . e($part['name']) . '</strong> x' . $quantity . ' for ' . e($job['code']) . '.',
-            e(money($unit * $quantity)),
-        ]);
 
         json_ok(['id' => $newId, 'status' => 'Pending Approval'], 201);
     }
 
     if ($action === 'remove_part') {
         $jobPartId = input_id($input['job_part_id'] ?? null);
-        $stmt = $pdo->prepare("SELECT jp.job_id, jp.status FROM JobParts jp JOIN JobCards j ON jp.job_id = j.job_id WHERE jp.job_part_id = ? AND j.mechanic_id = ?");
+        $stmt = $pdo->prepare("SELECT jp.job_card_id, jp.status FROM JobCardParts jp JOIN JobCards j ON jp.job_card_id = j.id WHERE jp.id = ? AND j.mechanic_id = ?");
         $stmt->execute([$jobPartId ?: 0, $mechanicId]);
         $row = $stmt->fetch();
         if (!$row) {
             json_error('Part request not found.', 404);
         }
-        editable_job($pdo, $mechanicId, (int) $row['job_id']);
+        editable_job($pdo, $mechanicId, (int) $row['job_card_id']);
         if ($row['status'] !== 'Pending Approval') {
             json_error('Only parts still pending approval can be removed.', 409);
         }
-        $pdo->prepare("DELETE FROM JobParts WHERE job_part_id = ? AND status = 'Pending Approval'")->execute([$jobPartId]);
+        $pdo->prepare("DELETE FROM JobCardParts WHERE id = ? AND status = 'Pending Approval'")->execute([$jobPartId]);
         json_ok(['id' => $jobPartId, 'removed' => true]);
     }
 
@@ -114,22 +108,22 @@ try {
         }
         $hours = round(($end->getTimestamp() - $start->getTimestamp()) / 3600, 2);
 
-        $pdo->prepare("INSERT INTO JobLabor (job_id, description, hours, hourly_rate) VALUES (?, ?, ?, ?)")
-            ->execute([$job['id'], $description, $hours, DEFAULT_HOURLY_RATE]);
+        $pdo->prepare("INSERT INTO JobCardLabor (job_card_id, mechanic_id, description, hours, hourly_rate) VALUES (?, ?, ?, ?, ?)")
+            ->execute([$job['id'], $mechanicId, $description, $hours, DEFAULT_HOURLY_RATE]);
 
         json_ok(['id' => (int) $pdo->lastInsertId(), 'hours' => $hours, 'hourly_rate' => DEFAULT_HOURLY_RATE], 201);
     }
 
     if ($action === 'remove_labor') {
         $laborId = input_id($input['labor_id'] ?? null);
-        $stmt = $pdo->prepare("SELECT l.job_id FROM JobLabor l JOIN JobCards j ON l.job_id = j.job_id WHERE l.labor_id = ? AND j.mechanic_id = ?");
+        $stmt = $pdo->prepare("SELECT l.job_card_id FROM JobCardLabor l JOIN JobCards j ON l.job_card_id = j.id WHERE l.id = ? AND j.mechanic_id = ?");
         $stmt->execute([$laborId ?: 0, $mechanicId]);
         $jobId = $stmt->fetchColumn();
         if (!$jobId) {
             json_error('Labor entry not found.', 404);
         }
         editable_job($pdo, $mechanicId, (int) $jobId);
-        $pdo->prepare("DELETE FROM JobLabor WHERE labor_id = ?")->execute([$laborId]);
+        $pdo->prepare("DELETE FROM JobCardLabor WHERE id = ?")->execute([$laborId]);
         json_ok(['id' => $laborId, 'removed' => true]);
     }
 

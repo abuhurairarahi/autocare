@@ -2,7 +2,7 @@
 /**
  * GET  [?job_id=ID] -> parsed fault reports for one assigned job, or for all assigned jobs.
  * POST { job_id, title, category, severity, description?, estimated_cost?, recommendation? }
- *      -> append a report to JobCards.fault_report (format in mechanic-data.php).
+ *      -> store the report as an AdditionalFaults row (format in mechanic-data.php).
  * Photos for a report are uploaded separately through photos.php.
  */
 require_once __DIR__ . '/../auth.php';
@@ -23,7 +23,7 @@ try {
         }
         $result = [];
         foreach (mechanic_jobs($pdo, $mechanicId, $filters) as $job) {
-            foreach (parse_fault_reports($job['fault_report']) as $report) {
+            foreach (job_fault_reports($pdo, $job) as $report) {
                 $result[] = $report + ['job_id' => $job['id'], 'job_code' => $job['code']];
             }
         }
@@ -70,20 +70,10 @@ try {
     }
 
     $block = format_fault_report($report, $user['name']);
-    $stmt = $pdo->prepare("
-        UPDATE JobCards
-           SET fault_report = IF(fault_report IS NULL OR fault_report = '', ?, CONCAT(fault_report, '\n\n', ?))
-         WHERE job_id = ? AND mechanic_id = ?
-    ");
-    $stmt->execute([$block, $block, $jobId, $mechanicId]);
+    $pdo->prepare("INSERT INTO AdditionalFaults (job_card_id, description) VALUES (?, ?)")->execute([$jobId, $block]);
+    $faultId = (int) $pdo->lastInsertId();
 
-    // Manager pages print ActivityLogs text/subtext as HTML, so escape everything interpolated
-    $pdo->prepare("INSERT INTO ActivityLogs (text, type, subtext) VALUES (?, 'red', ?)")->execute([
-        'Fault reported on <strong>' . e($job['code']) . '</strong>: ' . e($report['title']) . ' (' . e($report['severity']) . ').',
-        e($report['category']),
-    ]);
-
-    json_ok(['job_id' => $jobId, 'report' => parse_fault_reports($block)[0]], 201);
+    json_ok(['job_id' => $jobId, 'report' => parse_fault_report($block, '', '') + ['id' => $faultId]], 201);
 } catch (PDOException $e) {
     json_server_error($e);
 }

@@ -5,7 +5,7 @@ require_once __DIR__ . '/../../api/mechanic/mechanic-data.php';
 $user = require_page_role('Mechanic');
 $mechanicId = $user['id'];
 
-$categories = $pdo->query("SELECT category_id AS id, name FROM ServiceCategories ORDER BY name")->fetchAll();
+$categories = $pdo->query("SELECT id, name FROM ServiceCategories ORDER BY name")->fetchAll();
 
 // Filters come from the GET form; unknown values are ignored
 $filters = ['status' => 'open'];

@@ -48,20 +48,20 @@ try {
     }
 
     // The vehicle must belong to the logged-in owner
-    $stmt = $pdo->prepare("SELECT make, model FROM Vehicles WHERE vehicle_id = ? AND owner_id = ?");
+    $stmt = $pdo->prepare("SELECT make, model FROM Vehicles WHERE id = ? AND owner_id = ?");
     $stmt->execute([$vehicleId, $ownerId]);
     $vehicle = $stmt->fetch();
     if (!$vehicle) {
         json_error('Vehicle not found.', 404);
     }
 
-    $stmt = $pdo->prepare("SELECT 1 FROM Workshops WHERE workshop_id = ?");
+    $stmt = $pdo->prepare("SELECT 1 FROM Workshops WHERE id = ?");
     $stmt->execute([$workshopId]);
     if (!$stmt->fetchColumn()) {
         json_error('Workshop not found.', 404);
     }
 
-    $stmt = $pdo->prepare("SELECT name FROM ServiceCategories WHERE category_id = ?");
+    $stmt = $pdo->prepare("SELECT name FROM ServiceCategories WHERE id = ?");
     $stmt->execute([$categoryId]);
     $categoryName = $stmt->fetchColumn();
     if ($categoryName === false) {
@@ -79,29 +79,13 @@ try {
         json_error('This vehicle already has an appointment on that date.', 409);
     }
 
-    // Appointments.code is UNIQUE; retry on the rare collision
-    $insert = $pdo->prepare("
-        INSERT INTO Appointments (code, owner_id, vehicle_id, workshop_id, service_category_id, preferred_date, issue_description, priority, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'Normal', 'Pending')
-    ");
-    for ($attempt = 0; ; $attempt++) {
-        $code = 'BRQ-' . date('Y') . '-' . random_int(1000, 99999);
-        try {
-            $insert->execute([$code, $ownerId, $vehicleId, $workshopId, $categoryId, $preferred, $description !== '' ? $description : null]);
-            break;
-        } catch (PDOException $e) {
-            if ($e->getCode() !== '23000' || $attempt >= 4) {
-                throw $e;
-            }
-        }
-    }
+    $pdo->prepare("
+        INSERT INTO Appointments (owner_id, vehicle_id, workshop_id, service_category_id, preferred_date, issue_description, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'Pending')
+    ")->execute([$ownerId, $vehicleId, $workshopId, $categoryId, $preferred, $description !== '' ? $description : null]);
     $appointmentId = (int) $pdo->lastInsertId();
-
-    // Manager pages print ActivityLogs text/subtext as HTML, so escape everything interpolated
-    $pdo->prepare("INSERT INTO ActivityLogs (text, type, subtext) VALUES (?, 'blue', ?)")->execute([
-        'New Booking Request <strong>' . e($code) . '</strong> submitted by ' . e($user['name']) . '.',
-        e($vehicle['make'] . ' ' . $vehicle['model']),
-    ]);
+    // Same display code the manager booking-request API derives
+    $code = appointment_code($appointmentId, db_now());
 
     json_ok([
         'id' => $appointmentId,

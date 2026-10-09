@@ -1,7 +1,7 @@
 <?php
 /**
- * GET  -> estimates sent to the logged-in owner (Drafts are never shown).
- * POST { action: 'approve', estimate_id }          -> approve an estimate awaiting approval.
+ * GET  -> estimates on the logged-in owner's jobs.
+ * POST { action: 'approve', estimate_id }          -> approve an estimate that is 'Pending Approval'.
  * POST { action: 'clarify', estimate_id, message } -> ask the job's manager about an estimate (chat message).
  */
 require_once __DIR__ . '/../auth.php';
@@ -28,17 +28,12 @@ try {
         if (!$estimate['awaiting_approval']) {
             json_error('This estimate is ' . $estimate['status'] . ' and cannot be approved.', 409);
         }
-        $stmt = $pdo->prepare("UPDATE RepairEstimates SET status = 'Approved' WHERE estimate_id = ? AND status IN ('Sent', 'Send to Customer')");
+        $stmt = $pdo->prepare("UPDATE RepairEstimates SET status = 'Approved' WHERE id = ? AND status = 'Pending Approval'");
         $stmt->execute([$estimateId]);
         if ($stmt->rowCount() !== 1) {
             json_error('This estimate was changed by someone else. Please reload.', 409);
         }
 
-        // Manager pages print ActivityLogs text/subtext as HTML, so escape everything interpolated
-        $pdo->prepare("INSERT INTO ActivityLogs (text, type, subtext) VALUES (?, 'blue', ?)")->execute([
-            'Estimate <strong>' . e($estimate['code']) . '</strong> approved by ' . e($user['name']) . '.',
-            e(money($estimate['total_estimated_cost'])),
-        ]);
         json_ok(['id' => $estimateId, 'status' => 'Approved']);
     }
 
@@ -47,14 +42,14 @@ try {
         if ($message === null) {
             json_error('Write a question of 3-1000 characters.', 422);
         }
-        $stmt = $pdo->prepare("SELECT manager_id FROM JobCards WHERE job_id = ?");
+        $stmt = $pdo->prepare("SELECT manager_id FROM JobCards WHERE id = ?");
         $stmt->execute([$estimate['job_id']]);
         $managerId = (int) $stmt->fetchColumn();
         if (!$managerId) {
             json_error('No manager is assigned to this job yet.', 409);
         }
-        $pdo->prepare("INSERT INTO ChatMessages (sender_id, receiver_id, job_tag, message_text) VALUES (?, ?, ?, ?)")
-            ->execute([$ownerId, $managerId, $estimate['job_code'], "Question about estimate {$estimate['code']}: {$message}"]);
+        $pdo->prepare("INSERT INTO ChatMessages (sender_id, receiver_id, message_text) VALUES (?, ?, ?)")
+            ->execute([$ownerId, $managerId, "Question about estimate {$estimate['code']} ({$estimate['job_code']}): {$message}"]);
         json_ok(['sent' => true], 201);
     }
 

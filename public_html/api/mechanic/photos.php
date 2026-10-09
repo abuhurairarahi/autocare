@@ -1,7 +1,8 @@
 <?php
 /**
  * GET  ?job_id=ID -> photos for an assigned job.
- * POST multipart/form-data { job_id, description?, photo: file } -> upload a JPEG/PNG/WebP (max 5 MB).
+ * POST multipart/form-data { job_id, description?, type?: Before|After|Progress|Issue, photo: file }
+ *      -> upload a JPEG/PNG/WebP (max 5 MB) into JobCardPhotos.
  * POST { action: 'delete', photo_id } -> delete a photo from an assigned, open job.
  */
 require_once __DIR__ . '/../auth.php';
@@ -15,6 +16,7 @@ const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
 const PHOTO_TYPES = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
 const PHOTO_DIR = __DIR__ . '/../../uploads/repair-photos';
 const PHOTO_URL_PREFIX = '../../uploads/repair-photos/';
+const PHOTO_KINDS = ['Before', 'After', 'Progress', 'Issue'];
 
 try {
     if ($method === 'GET') {
@@ -34,8 +36,8 @@ try {
         }
         $photoId = input_id($input['photo_id'] ?? null);
         $stmt = $pdo->prepare("
-            SELECT p.photo_url, j.status FROM RepairPhotos p JOIN JobCards j ON p.job_id = j.job_id
-             WHERE p.photo_id = ? AND j.mechanic_id = ?");
+            SELECT p.photo_url, j.status FROM JobCardPhotos p JOIN JobCards j ON p.job_card_id = j.id
+             WHERE p.id = ? AND j.mechanic_id = ?");
         $stmt->execute([$photoId ?: 0, $mechanicId]);
         $photo = $stmt->fetch();
         if (!$photo) {
@@ -44,7 +46,7 @@ try {
         if (in_array($photo['status'], ['Completed', 'Delivered'], true)) {
             json_error('Photos on a finished job cannot be deleted.', 409);
         }
-        $pdo->prepare("DELETE FROM RepairPhotos WHERE photo_id = ?")->execute([$photoId]);
+        $pdo->prepare("DELETE FROM JobCardPhotos WHERE id = ?")->execute([$photoId]);
 
         // Remove the file only if it is one of our uploads (seed rows point at shared assets)
         if (strpos($photo['photo_url'], PHOTO_URL_PREFIX) === 0) {
@@ -69,6 +71,10 @@ try {
     if ($description === null) {
         json_error('Caption must be 255 characters or fewer.', 422);
     }
+    $type = $_POST['type'] ?? 'Progress';
+    if (!in_array($type, PHOTO_KINDS, true)) {
+        json_error('Photo type must be one of: ' . implode(', ', PHOTO_KINDS) . '.', 422);
+    }
 
     $file = $_FILES['photo'] ?? null;
     $code = is_array($file) && is_int($file['error'] ?? null) ? $file['error'] : UPLOAD_ERR_NO_FILE;
@@ -92,12 +98,13 @@ try {
         throw new RuntimeException('move_uploaded_file failed');
     }
 
-    $pdo->prepare("INSERT INTO RepairPhotos (job_id, photo_url, description) VALUES (?, ?, ?)")
-        ->execute([$jobId, PHOTO_URL_PREFIX . $name, $description !== '' ? $description : null]);
+    $pdo->prepare("INSERT INTO JobCardPhotos (job_card_id, photo_url, type, description) VALUES (?, ?, ?, ?)")
+        ->execute([$jobId, PHOTO_URL_PREFIX . $name, $type, $description !== '' ? $description : null]);
 
     json_ok([
         'id' => (int) $pdo->lastInsertId(),
         'photo_url' => PHOTO_URL_PREFIX . $name,
+        'type' => $type,
         'description' => $description,
     ], 201);
 } catch (Throwable $e) {

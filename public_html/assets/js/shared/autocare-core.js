@@ -184,7 +184,7 @@
         throw new Error('Network error. Check your connection.');
       }
       if (res.status === 401) {
-        window.location.href = '../login.php';
+        window.location.href = '../login.html';
         throw new Error('Session expired');
       }
       let json = null;

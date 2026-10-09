@@ -3,26 +3,26 @@
  * Smoke test for the Vehicle Owner and Mechanic roles.
  *
  * Usage: php tests/smoke.php [base_url]
- *   base_url defaults to http://localhost/autocare/public_html
+ *   base_url defaults to http://localhost/autocare-new/public_html
  *
- * Logs in through api/login.php, requests every .php page and every GET endpoint
+ * Logs in through the team login (api/login-api.php?action=login), requests every .php page and every GET endpoint
  * for each role, prints a PASS/FAIL table, lists hrefs pointing to .html or "#",
  * then shows Apache error.log lines written during the run. Read-only: only GET
  * requests are made after login.
  */
 
-$base = rtrim($argv[1] ?? 'http://localhost/autocare/public_html', '/');
+$base = rtrim($argv[1] ?? 'http://localhost/autocare-new/public_html', '/');
 $root = dirname(__DIR__) . '/public_html';
 $errorLog = 'C:/xampp/apache/logs/error.log';
 $phpErrorLog = 'C:/xampp/php/logs/php_error_log';
 
 $roles = [
     'owner' => [
-        'email' => 'ops@apexlogistics.com', 'password' => 'owner123',
+        'email' => 'owner@autocare.com', 'password' => 'password123',
         'pages' => 'pages/vehicleowner', 'api' => 'api/vehicleowner',
     ],
     'mechanic' => [
-        'email' => 'david.c@autocare.com', 'password' => 'mechanic123',
+        'email' => 'mechanic@autocare.com', 'password' => 'password123',
         'pages' => 'pages/mechanic', 'api' => 'api/mechanic',
     ],
 ];
@@ -150,14 +150,21 @@ $links = [];
 foreach ($roles as $role => $cfg) {
     $jar = tempnam(sys_get_temp_dir(), 'smoke');
 
-    $login = http("$base/api/login.php", $jar, json_encode(['email' => $cfg['email'], 'password' => $cfg['password']]));
+    $login = http("$base/api/login-api.php?action=login", $jar, json_encode(['email' => $cfg['email'], 'password' => $cfg['password']]));
     $lj = json_decode($login['body'], true);
     if (($lj['success'] ?? false) !== true) {
-        $results[] = [$role, 'api/login.php', 'FAIL', 'login failed: ' . ($lj['message'] ?? "HTTP {$login['status']}")];
+        $results[] = [$role, 'api/login-api.php', 'FAIL', 'login failed: ' . ($lj['error'] ?? "HTTP {$login['status']}")];
         @unlink($jar);
         continue;
     }
-    $results[] = [$role, 'api/login.php', 'PASS', 'role=' . ($lj['role'] ?? '?')];
+    $results[] = [$role, 'api/login-api.php', 'PASS', 'role=' . ($lj['user']['role'] ?? '?') . ' redirect=' . ($lj['redirect_url'] ?? '?')];
+
+    // The team login redirects to the old .html page, which must forward to the .php page
+    $redirectPage = 'pages/' . ($lj['redirect_url'] ?? '');
+    $res = http("$base/$redirectPage", $jar);
+    $phpTarget = basename(preg_replace('/\.html$/', '.php', $redirectPage));
+    $results[] = [$role, $redirectPage, ($res['status'] === 200 && str_contains($res['body'], $phpTarget)) ? 'PASS' : 'FAIL',
+        "HTTP {$res['status']}, forwards to $phpTarget"];
 
     $pages = glob("$root/{$cfg['pages']}/*.php");
     sort($pages);
@@ -208,7 +215,15 @@ foreach ($roles as $role => $cfg) {
                 $results[] = [$role, $u, 'FAIL', 'no assigned job id available to test with'];
                 continue;
             }
-            [$verdict, $reason] = check_endpoint(http("$base/$u", $jar));
+            $res = http("$base/$u", $jar);
+            if ($u === $rel && in_array($rel, $needsJobId, true)) {
+                // job_id is required: the bare call must be a clean JSON 404, not a crash
+                $json = json_decode($res['body'], true);
+                $ok = $res['status'] === 404 && is_array($json) && ($json['success'] ?? null) === false;
+                $results[] = [$role, $u, $ok ? 'PASS' : 'FAIL', ($ok ? 'expected ' : 'unexpected ') . "HTTP {$res['status']} without job_id"];
+                continue;
+            }
+            [$verdict, $reason] = check_endpoint($res);
             $results[] = [$role, $u, $verdict, $reason];
         }
     }

@@ -2,8 +2,8 @@
 /**
  * mechanic-data.php
  * Read queries for the Mechanic panel, shared by the server-rendered pages and
- * the JSON endpoints. Every function is scoped to the given $mechanicId, which
- * callers must take from the session.
+ * the JSON endpoints. Every function is scoped to the given $mechanicId (a Users.id),
+ * which callers must take from the session.
  */
 
 if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
@@ -13,35 +13,34 @@ if (realpath($_SERVER['SCRIPT_FILENAME'] ?? '') === __FILE__) {
 
 require_once __DIR__ . '/../repair-stages.php';
 
-// JobLabor.hourly_rate is NOT NULL but the schema has no rate table; this is the shop default
+// JobCardLabor.hourly_rate is NOT NULL but the schema has no rate table; this is the shop default
 const DEFAULT_HOURLY_RATE = 150.00;
 
 const OPEN_JOB_SQL = "j.status NOT IN ('Completed', 'Delivered')";
 
+// Appointments have no priority column; like the manager booking API, every job is 'Normal'
+const DEFAULT_PRIORITY = 'Normal';
+
 /**
- * Jobs assigned to the mechanic. Filters: status ('open' | 'done' | a JobCards.status),
+ * Jobs assigned to the mechanic. Filters: status ('open' | 'done' | a displayed status),
  * priority (Low/Normal/High), category_id, sort ('newest' | 'oldest' | 'priority'), id.
  */
 function mechanic_jobs(PDO $pdo, int $mechanicId, array $filters = []): array
 {
     $sql = "
-        SELECT j.job_id AS id,
-               COALESCE(j.code, CONCAT('JC-', j.job_id)) AS code,
-               j.work_order, j.status, j.kanban_stage, j.progress_percentage,
-               COALESCE(j.service_text, j.fault_report, 'General Service') AS service_text,
+        SELECT j.id, j.created_at, j.status AS db_status, " . display_status_sql('j') . " AS shown_status,
                j.fault_report, j.estimated_cost, j.delivery_date, j.start_date, j.completion_date,
                j.manager_id, mgr.name AS manager_name,
-               COALESCE(a.priority, 'Normal') AS priority,
-               a.issue_description,
+               a.issue_description, a.service_category_id,
                sc.name AS category_name,
                v.make, v.model, v.year, v.license_plate,
-               o.user_id AS owner_id, o.name AS owner_name
+               o.id AS owner_id, o.name AS owner_name
           FROM JobCards j
-          LEFT JOIN Appointments a ON j.appointment_id = a.appointment_id
-          LEFT JOIN ServiceCategories sc ON a.service_category_id = sc.category_id
-          LEFT JOIN Vehicles v ON a.vehicle_id = v.vehicle_id
-          LEFT JOIN Users o ON a.owner_id = o.user_id
-          LEFT JOIN Users mgr ON j.manager_id = mgr.user_id
+          LEFT JOIN Appointments a ON j.appointment_id = a.id
+          LEFT JOIN ServiceCategories sc ON a.service_category_id = sc.id
+          LEFT JOIN Vehicles v ON a.vehicle_id = v.id
+          LEFT JOIN Users o ON a.owner_id = o.id
+          LEFT JOIN Users mgr ON j.manager_id = mgr.id
          WHERE j.mechanic_id = ?
     ";
     $params = [$mechanicId];
@@ -51,38 +50,43 @@ function mechanic_jobs(PDO $pdo, int $mechanicId, array $filters = []): array
         $sql .= " AND " . OPEN_JOB_SQL;
     } elseif ($status === 'done') {
         $sql .= " AND j.status IN ('Completed', 'Delivered')";
-    } elseif ($status) {
-        $sql .= " AND j.status = ?";
-        $params[] = $status;
     }
-    if (!empty($filters['priority'])) {
-        $sql .= " AND COALESCE(a.priority, 'Normal') = ?";
-        $params[] = $filters['priority'];
+    if (!empty($filters['priority']) && $filters['priority'] !== DEFAULT_PRIORITY) {
+        $sql .= " AND 1 = 0";
     }
     if (!empty($filters['category_id'])) {
         $sql .= " AND a.service_category_id = ?";
         $params[] = (int) $filters['category_id'];
     }
     if (!empty($filters['id'])) {
-        $sql .= " AND j.job_id = ?";
+        $sql .= " AND j.id = ?";
         $params[] = (int) $filters['id'];
     }
-
-    $order = [
-        'oldest' => 'j.start_date ASC, j.job_id ASC',
-        'priority' => "FIELD(COALESCE(a.priority, 'Normal'), 'High', 'Normal', 'Low'), j.start_date DESC",
-    ][$filters['sort'] ?? ''] ?? 'j.start_date DESC, j.job_id DESC';
-    $sql .= " ORDER BY {$order}";
+    $sql .= ($filters['sort'] ?? '') === 'oldest'
+        ? " ORDER BY COALESCE(j.start_date, j.created_at) ASC, j.id ASC"
+        : " ORDER BY COALESCE(j.start_date, j.created_at) DESC, j.id DESC";
 
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
-    $rows = $stmt->fetchAll();
-    foreach ($rows as &$row) {
+    $rows = [];
+    foreach ($stmt->fetchAll() as $row) {
         $row['id'] = (int) $row['id'];
+        $row['status'] = display_status($row['db_status'], $row['shown_status']);
+        unset($row['shown_status']);
+        if ($status && !in_array($status, ['open', 'done'], true) && $row['status'] !== $status) {
+            continue;
+        }
+        $progress = status_progress($row['status']);
+        $row['code'] = job_code($row['id'], $row['created_at']);
+        $row['work_order'] = null;
+        $row['kanban_stage'] = $progress['kanban'];
+        $row['progress_percentage'] = $progress['progress'];
+        $row['service_text'] = $row['category_name'] ?: ($row['issue_description'] ?: ($row['fault_report'] ?: 'General Service'));
+        $row['priority'] = DEFAULT_PRIORITY;
         $row['estimated_cost'] = (float) $row['estimated_cost'];
-        $row['progress_percentage'] = (int) $row['progress_percentage'];
-        $row['is_open'] = !in_array($row['status'], ['Completed', 'Delivered'], true);
+        $row['is_open'] = !in_array($row['db_status'], ['Completed', 'Delivered'], true);
         $row['vehicle'] = $row['make'] ? trim($row['year'] . ' ' . $row['make'] . ' ' . $row['model']) : null;
+        $rows[] = $row;
     }
     return $rows;
 }
@@ -104,9 +108,9 @@ function mechanic_job_detail(PDO $pdo, int $mechanicId, int $jobId): ?array
 
     $stmt = $pdo->prepare("
         SELECT t.stage, t.updated_at, u.name AS updated_by_name
-          FROM RepairTimeline t LEFT JOIN Users u ON t.updated_by = u.user_id
-         WHERE t.job_id = ?
-         ORDER BY t.updated_at DESC, t.timeline_id DESC
+          FROM RepairTimeline t LEFT JOIN Users u ON t.updated_by = u.id
+         WHERE t.job_card_id = ?
+         ORDER BY t.updated_at DESC, t.id DESC
     ");
     $stmt->execute([$jobId]);
     $job['timeline'] = $stmt->fetchAll();
@@ -114,7 +118,7 @@ function mechanic_job_detail(PDO $pdo, int $mechanicId, int $jobId): ?array
     $job['parts'] = job_parts($pdo, $jobId);
     $job['labor'] = job_labor($pdo, $jobId);
 
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM RepairPhotos WHERE job_id = ?");
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM JobCardPhotos WHERE job_card_id = ?");
     $stmt->execute([$jobId]);
     $job['photo_count'] = (int) $stmt->fetchColumn();
 
@@ -124,11 +128,11 @@ function mechanic_job_detail(PDO $pdo, int $mechanicId, int $jobId): ?array
 function job_parts(PDO $pdo, int $jobId): array
 {
     $stmt = $pdo->prepare("
-        SELECT jp.job_part_id AS id, jp.part_id, sp.name, sp.sku, jp.quantity, jp.unit_price,
-               jp.total_price, jp.status, jp.rejection_reason, jp.requested_at
-          FROM JobParts jp JOIN SpareParts sp ON jp.part_id = sp.part_id
-         WHERE jp.job_id = ?
-         ORDER BY jp.job_part_id
+        SELECT jp.id, jp.part_id, sp.name, sp.sku, jp.quantity, jp.unit_price,
+               ROUND(jp.quantity * jp.unit_price, 2) AS total_price, jp.status, jp.requested_at
+          FROM JobCardParts jp JOIN SpareParts sp ON jp.part_id = sp.id
+         WHERE jp.job_card_id = ?
+         ORDER BY jp.id
     ");
     $stmt->execute([$jobId]);
     $rows = $stmt->fetchAll();
@@ -137,17 +141,19 @@ function job_parts(PDO $pdo, int $jobId): array
         $row['quantity'] = (int) $row['quantity'];
         $row['unit_price'] = (float) $row['unit_price'];
         $row['total_price'] = (float) $row['total_price'];
+        $row['rejection_reason'] = null; // not stored in this schema
     }
     return $rows;
 }
 
 function job_labor(PDO $pdo, int $jobId): array
 {
-    $stmt = $pdo->prepare("SELECT labor_id AS id, description, hours, hourly_rate FROM JobLabor WHERE job_id = ? ORDER BY labor_id");
+    $stmt = $pdo->prepare("SELECT id, mechanic_id, description, hours, hourly_rate, logged_at FROM JobCardLabor WHERE job_card_id = ? ORDER BY id");
     $stmt->execute([$jobId]);
     $rows = $stmt->fetchAll();
     foreach ($rows as &$row) {
         $row['id'] = (int) $row['id'];
+        $row['mechanic_id'] = (int) $row['mechanic_id'];
         $row['hours'] = (float) $row['hours'];
         $row['hourly_rate'] = (float) $row['hourly_rate'];
         $row['total'] = round($row['hours'] * $row['hourly_rate'], 2);
@@ -178,7 +184,7 @@ function parts_labor_summary(array $parts, array $labor): array
 /** Photos for a job, newest first, with unsafe URLs dropped. */
 function job_photos(PDO $pdo, int $jobId): array
 {
-    $stmt = $pdo->prepare("SELECT photo_id AS id, photo_url, description, uploaded_at FROM RepairPhotos WHERE job_id = ? ORDER BY uploaded_at DESC, photo_id DESC");
+    $stmt = $pdo->prepare("SELECT id, photo_url, type, description, uploaded_at FROM JobCardPhotos WHERE job_card_id = ? ORDER BY uploaded_at DESC, id DESC");
     $stmt->execute([$jobId]);
     $photos = [];
     foreach ($stmt->fetchAll() as $p) {
@@ -191,7 +197,7 @@ function job_photos(PDO $pdo, int $jobId): array
     return $photos;
 }
 
-// Fault reports are appended to JobCards.fault_report as text blocks:
+// Each fault report is one AdditionalFaults row whose description is a text block:
 //   [High] Engine: Oil leak at valve cover
 //   <description>
 //   Recommendation: <text>
@@ -204,8 +210,7 @@ function format_fault_report(array $r, string $reporter): string
 {
     $lines = ["[{$r['severity']}] {$r['category']}: {$r['title']}"];
     if ($r['description'] !== '') {
-        // Blank lines separate reports, so they cannot appear inside one
-        $lines[] = preg_replace("/\n\\s*\n/", "\n", $r['description']);
+        $lines[] = $r['description'];
     }
     if ($r['recommendation'] !== '') $lines[] = 'Recommendation: ' . $r['recommendation'];
     if ($r['estimated_cost'] !== null) $lines[] = 'Estimated cost: ' . money($r['estimated_cost']);
@@ -214,40 +219,49 @@ function format_fault_report(array $r, string $reporter): string
 }
 
 /**
- * Split a job's fault_report into report cards, newest first. Text that is not in the
- * block format (e.g. seed data or manager notes) becomes a single untitled card.
+ * Parse one report block. Text not in the block format (e.g. faults added by the
+ * manager, or the job card's own fault_report) becomes an untitled card.
  */
-function parse_fault_reports(?string $text): array
+function parse_fault_report(string $text, string $fallbackCategory, string $fallbackTitle, ?string $reportedAt = null): array
 {
-    $text = trim((string) $text);
-    if ($text === '') {
-        return [];
-    }
-    $reports = [];
-    foreach (preg_split("/\n\\s*\n/", str_replace("\r\n", "\n", $text)) as $block) {
-        $lines = explode("\n", trim($block));
-        if (preg_match('/^\[(Low|Medium|High)\] ([^:]+): (.+)$/', $lines[0], $m)) {
-            $report = ['severity' => $m[1], 'category' => $m[2], 'title' => $m[3], 'body' => [], 'reported' => null];
-            foreach (array_slice($lines, 1) as $line) {
-                if (preg_match('/^Reported by (.+) on (\d{4}-\d{2}-\d{2} \d{2}:\d{2})$/', $line, $r)) {
-                    $report['reported'] = ['by' => $r[1], 'at' => $r[2]];
-                } else {
-                    $report['body'][] = $line;
-                }
+    $lines = explode("\n", trim(str_replace("\r\n", "\n", $text)));
+    if (preg_match('/^\[(Low|Medium|High)\] ([^:]+): (.+)$/', $lines[0], $m)) {
+        $report = ['severity' => $m[1], 'category' => $m[2], 'title' => $m[3], 'body' => [], 'reported' => null];
+        foreach (array_slice($lines, 1) as $line) {
+            if (preg_match('/^Reported by (.+) on (\d{4}-\d{2}-\d{2} \d{2}:\d{2})$/', $line, $r)) {
+                $report['reported'] = ['by' => $r[1], 'at' => $r[2]];
+            } else {
+                $report['body'][] = $line;
             }
-            $report['body'] = implode("\n", $report['body']);
-            $reports[] = $report;
-        } else {
-            $reports[] = ['severity' => null, 'category' => 'Job notes', 'title' => 'Inspection notes', 'body' => trim($block), 'reported' => null];
         }
+        $report['body'] = implode("\n", $report['body']);
+        return $report;
     }
-    return array_reverse($reports);
+    return [
+        'severity' => null, 'category' => $fallbackCategory, 'title' => $fallbackTitle, 'body' => trim($text),
+        'reported' => $reportedAt ? ['by' => null, 'at' => date('Y-m-d H:i', strtotime($reportedAt))] : null,
+    ];
+}
+
+/** Fault report cards for a job, newest first: AdditionalFaults rows, then the job card's fault_report notes. */
+function job_fault_reports(PDO $pdo, array $job): array
+{
+    $stmt = $pdo->prepare("SELECT id, description, reported_at FROM AdditionalFaults WHERE job_card_id = ? ORDER BY reported_at DESC, id DESC");
+    $stmt->execute([$job['id']]);
+    $reports = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $reports[] = parse_fault_report($row['description'], 'Additional fault', 'Additional fault found', $row['reported_at']) + ['id' => (int) $row['id']];
+    }
+    if (trim((string) $job['fault_report']) !== '') {
+        $reports[] = parse_fault_report($job['fault_report'], 'Job notes', 'Inspection notes') + ['id' => null];
+    }
+    return $reports;
 }
 
 /** Spare parts catalogue for the "Add Part" picker. */
 function spare_parts_catalog(PDO $pdo): array
 {
-    return $pdo->query("SELECT part_id AS id, sku, name, category, price, stock_quantity, unit FROM SpareParts ORDER BY name")->fetchAll();
+    return $pdo->query("SELECT id, sku, name, category, price, stock_quantity, 'pcs' AS unit FROM SpareParts ORDER BY name")->fetchAll();
 }
 
 /** KPIs and status breakdown for the mechanic dashboard. */
@@ -259,17 +273,18 @@ function mechanic_dashboard(PDO $pdo, int $mechanicId): array
         return $stmt->fetchColumn();
     };
 
-    $stmt = $pdo->prepare("SELECT j.status, COUNT(*) AS n FROM JobCards j WHERE j.mechanic_id = ? AND " . OPEN_JOB_SQL . " GROUP BY j.status");
-    $stmt->execute([$mechanicId]);
-    $byStatus = array_map('intval', $stmt->fetchAll(PDO::FETCH_KEY_PAIR));
+    $byStatus = [];
+    foreach (mechanic_jobs($pdo, $mechanicId, ['status' => 'open']) as $job) {
+        $byStatus[$job['status']] = ($byStatus[$job['status']] ?? 0) + 1;
+    }
 
     $inProgress = ($byStatus['In Progress'] ?? 0) + ($byStatus['Repairing'] ?? 0) + ($byStatus['Awaiting Parts'] ?? 0);
     $testing = $byStatus['Testing'] ?? 0;
     $open = array_sum($byStatus);
 
     $stmt = $pdo->prepare("
-        SELECT COALESCE(SUM(jp.quantity), 0) AS qty, COUNT(DISTINCT jp.job_id) AS jobs
-          FROM JobParts jp JOIN JobCards j ON jp.job_id = j.job_id
+        SELECT COALESCE(SUM(jp.quantity), 0) AS qty, COUNT(DISTINCT jp.job_card_id) AS jobs
+          FROM JobCardParts jp JOIN JobCards j ON jp.job_card_id = j.id
          WHERE j.mechanic_id = ? AND DATE(jp.requested_at) = CURDATE()
     ");
     $stmt->execute([$mechanicId]);
@@ -281,7 +296,7 @@ function mechanic_dashboard(PDO $pdo, int $mechanicId): array
         'testing' => $testing,
         'not_started' => $open - $inProgress - $testing,
         'completed_today' => (int) $one("SELECT COUNT(*) FROM JobCards WHERE mechanic_id = ? AND status IN ('Completed', 'Delivered') AND DATE(completion_date) = CURDATE()"),
-        'open_labor_hours' => (float) $one("SELECT COALESCE(SUM(l.hours), 0) FROM JobLabor l JOIN JobCards j ON l.job_id = j.job_id WHERE j.mechanic_id = ? AND " . OPEN_JOB_SQL),
+        'open_labor_hours' => (float) $one("SELECT COALESCE(SUM(l.hours), 0) FROM JobCardLabor l JOIN JobCards j ON l.job_card_id = j.id WHERE j.mechanic_id = ? AND " . OPEN_JOB_SQL),
         'parts_today' => (int) $partsToday['qty'],
         'parts_today_jobs' => (int) $partsToday['jobs'],
         'by_status' => $byStatus,
