@@ -73,45 +73,46 @@ const ROLE_HOME = [
 
 /**
  * The logged-in user from the team login session, or null when not logged in.
- * 'id' is the Users.id (matched by email to AuthUsers) that every query here uses;
- * it is null when the login account has no matching Users row of the same role.
- * 'role' is the Users.role form ('VehicleOwner', 'Mechanic'), or the raw session role
- * for other roles; 'session_role' is always the raw session value.
+ * For the Vehicle Owner / Mechanic roles, 'id' is the Users.id whose email matches the
+ * AuthUsers login. It is resolved from the database on every request (never cached in the
+ * session), so a deleted or re-seeded Users row cannot leave a stale id behind; it is null
+ * when no Users row of that role has the login's email. 'role' is the Users.role form
+ * ('VehicleOwner', 'Mechanic') or the raw session role for other roles; 'session_role' is
+ * always the raw session value.
  */
 function current_user(): ?array
 {
+    static $resolved = [];
     if (empty($_SESSION['user_id']) || empty($_SESSION['user_role'])) {
         return null;
     }
     $authId = (int) $_SESSION['user_id'];
     $sessionRole = (string) $_SESSION['user_role'];
     $role = SESSION_ROLE_MAP[$sessionRole] ?? $sessionRole;
+    unset($_SESSION['om_link']); // left over from the old session cache
 
-    $cache = $_SESSION['om_link'] ?? null;
-    if (!is_array($cache) || $cache['auth_id'] !== $authId || $cache['role'] !== $role || $cache['id'] === null) {
-        $id = null;
-        $name = null;
+    $key = $authId . '|' . $role;
+    if (!array_key_exists($key, $resolved)) {
+        $row = null;
         if (isset(SESSION_ROLE_MAP[$sessionRole])) {
             global $pdo;
             $stmt = $pdo->prepare("
-                SELECT u.id, u.name FROM AuthUsers a JOIN Users u ON u.email = a.email
+                SELECT u.id, u.name, u.email FROM AuthUsers a JOIN Users u ON u.email = a.email
                  WHERE a.id = ? AND u.role = ? LIMIT 1");
             $stmt->execute([$authId, $role]);
-            if ($row = $stmt->fetch()) {
-                $id = (int) $row['id'];
-                $name = $row['name'];
-            }
+            $row = $stmt->fetch() ?: null;
         }
-        $cache = ['auth_id' => $authId, 'role' => $role, 'id' => $id, 'name' => $name];
-        $_SESSION['om_link'] = $cache;
+        $resolved[$key] = $row;
     }
+    $row = $resolved[$key];
 
     return [
-        'id' => $cache['id'],
+        'id' => $row ? (int) $row['id'] : null,
         'auth_id' => $authId,
         'role' => $role,
         'session_role' => $sessionRole,
-        'name' => (string) ($_SESSION['user_name'] ?? $cache['name'] ?? ''),
+        'name' => (string) ($_SESSION['user_name'] ?? ($row['name'] ?? '')),
+        'email' => $row['email'] ?? null,
     ];
 }
 
@@ -178,7 +179,9 @@ function require_api_role(string $role): array
         json_error('Forbidden', 403);
     }
     if ($user['id'] === null) {
-        json_error('This login has no linked ' . $role . ' profile.', 403);
+        // No Users row matches this login's email any more: end the session
+        logout_user();
+        json_error('Not authenticated', 401);
     }
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     if ($method !== 'GET' && !csrf_valid($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
@@ -200,10 +203,9 @@ function require_page_role(string $role): array
         exit;
     }
     if ($user['id'] === null) {
-        // Logged in with the right role but no Users row shares this email
-        http_response_code(403);
-        echo '<p style="font-family: sans-serif; padding: 24px;">Your login is not linked to a ' . e($role)
-            . ' profile yet. Please contact the workshop. <a href="../logout.php">Log out</a></p>';
+        // No Users row matches this login's email any more: end the session
+        logout_user();
+        header('Location: ../login.html');
         exit;
     }
     return $user;
